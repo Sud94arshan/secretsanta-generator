@@ -1,0 +1,82 @@
+pipeline {
+    agent any
+    
+    tools {
+        maven 'maven3'
+        jdk  'jdk17'
+        
+    }
+    environment {
+        SONAR_SCANNER = tool "sonar-scanner"
+    }
+
+    stages {
+        stage('Git Checkout') {
+            steps {
+                git 'https://github.com/Sud94arshan/secretsanta-generator.git'
+            }
+        }
+        stage('Compile') {
+            steps {
+                sh "mvn compile"
+            }
+        }
+        stage('OWASP FileSystem Scan') {
+            steps {
+                dependencyCheck additionalArguments: '--scan ./', odcInstallation: 'DC'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                
+            }
+        }
+        stage('SonarQube') {
+            steps {
+                withSonarQubeEnv('sonar') {
+
+                sh ''' $SONAR_SCANNER/bin/sonar-scanner -Dsonar.projectName=secret-santa -Dsonar.projectKey=secret-santa \
+                -Dsonar.java.binaries=target/classes'''
+                    
+                    }
+            }
+        }
+        stage('Build Application & Push Artifact') {
+            steps {
+                withMaven(globalMavenSettingsConfig: '', jdk: 'jdk17', maven: 'maven3', mavenSettingsConfig: 'maven-settings-default', traceability: true) {
+                  sh "mvn deploy "
+                }
+            }
+        }
+        stage('Docker Build & Tag') {
+            steps {
+                script{
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh 'docker build -t sud94arshan/secret-santa:latest  .'
+                    }
+                }
+            }
+        }
+        stage('Trivy Image Scan') {
+            steps {
+                sh 'trivy image --format table -o trivy-report.html sud94arshan/secret-santa:latest '
+            }
+        }
+        stage('Docker Push') {
+            steps {
+                script{
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh 'docker push sud94arshan/secret-santa:latest '
+                    }
+                }
+            }
+        }
+        stage('k8s deploy') {
+            steps {
+                withKubeConfig(caCertificate: '', clusterName: 'kubernetes', contextName: '', credentialsId: 'k8-auth', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://100.26.200.1:6443') {
+                    sh 'kubectl apply -f k8-dep-svc.yaml'
+                    sh 'kubectl get svc -n webapps'
+                }
+            }
+        }
+        
+        
+    }
+}
